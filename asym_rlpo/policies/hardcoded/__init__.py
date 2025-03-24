@@ -13,7 +13,7 @@ def make_hardcoded_policy(env_name: str, env: Environment) -> Policy:
         size = int(match.group(1))
         return HeavenHell_HardcodedPolicy(size)
 
-    if match := re.match(r"POMDP-shopping_(\d+)-episodic-v0", env_name):
+    if match := re.match(r"POMDP-shopping_(\d+)-episodic-v(\d+)", env_name):
         size = int(match.group(1))
         return Shopping_HardcodedPolicy(size)
 
