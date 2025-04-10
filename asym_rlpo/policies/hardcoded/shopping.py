@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 class SubGoals(enum.Enum):
+    FIRST_MOVE = enum.auto()
     FIND_ITEM_LOCATION = enum.auto()
     GO_TO_ITEM_LOCATION = enum.auto()
     BUY_THE_ITEM = enum.auto()
@@ -28,44 +29,50 @@ class Shopping_HardcodedPolicy(Policy):
     def __init__(self, size: int):
         super().__init__()
         self.size = size
-        self.subgoal = SubGoals.FIND_ITEM_LOCATION
+        self.subgoal = SubGoals.FIRST_MOVE
         self.item_location = None
         self.current_position = None
+        self.next_action =  None
 
     def reset(self, observation):
         """ Reset the policy for a new episode """
-        self.subgoal = SubGoals.FIND_ITEM_LOCATION
+        self.subgoal = SubGoals.FIRST_MOVE
         self.item_location = None
         self.current_position = None
+        self.next_action =  Actions.QUERY
 
     def step(self, action, observation):
         """ Choose the next action based on the current subgoal """
         observation = observation.item()
-        test = self.get_coordinates(observation)
-        breakpoint()
-        if self.subgoal == SubGoals.FIND_ITEM_LOCATION:
+        #breakpoint()
+        if self.subgoal == SubGoals.FIRST_MOVE:
+            self.subgoal = SubGoals.FIND_ITEM_LOCATION
+            self.next_action = Actions.QUERY
+        
+        elif self.subgoal == SubGoals.FIND_ITEM_LOCATION:
             #TO-DO: Get the iteam location or obersavation and get the co-ordinates Update the representaion 
-            breakpoint()
-            self.item_location = observation.get("item_location")  # Assuming environment provides this after querying
-            if self.item_location:
-                self.subgoal = SubGoals.GO_TO_ITEM_LOCATION
-            return Actions.QUERY  # Query for the item location
-
+            self.item_location = self.get_coordinates(observation)  # Assuming environment provides this after querying
+            self.subgoal = SubGoals.GO_TO_ITEM_LOCATION
+            self.next_action = Actions.LEFT  # Random Action
+        
         elif self.subgoal == SubGoals.GO_TO_ITEM_LOCATION:
+            self.current_position = self.get_coordinates(observation)
+            #breakpoint()
             if self.current_position == self.item_location:
+                #breakpoint()
                 self.subgoal = SubGoals.BUY_THE_ITEM
-                return Actions.BUY  # Buy the item once at the correct location
+                self.next_action = Actions.BUY  # Buy the item once at the correct location
             
             # Move towards the item
-            return self._move_towards(self.item_location)
+            self.next_action = self._move_towards(self.item_location)
 
         elif self.subgoal == SubGoals.BUY_THE_ITEM:
-            return Actions.BUY
+            self.next_action = Actions.BUY
     
     def sample_action(self):
         """ Returns a random action (not needed for this hardcoded policy) """
         #TODO: Actions will take place here
-        return 0  # Default action for exploration    
+        return self._action_to_int[self.next_action]  # Default action for exploration    
 
     
     def _move_towards(self, target):
@@ -74,20 +81,12 @@ class Shopping_HardcodedPolicy(Policy):
         tx, ty = target
 
         if x < tx:
-            x  += 1
-            self.current_position = (x,y)
             return Actions.RIGHT
         elif x > tx:
-            x  -= 1
-            self.current_position = (x,y)
             return Actions.LEFT
         elif y < ty:
-            y += 1
-            self.current_position = (x,y)
             return Actions.UP
         elif y > ty:
-            y  -= 1
-            self.current_position = (x,y)
             return Actions.DOWN
         elif x == tx and y == ty:
             return Actions.BUY
@@ -95,9 +94,10 @@ class Shopping_HardcodedPolicy(Policy):
    
     def get_coordinates(self, location):
         """Returns X & Y Co ordinates from the observation"""
+        grid_loc = location 
         gird_limit =(self.size**2)
         if(location >= gird_limit):
-            grid_loc = location - gird_limit 
+            grid_loc = location - gird_limit
         y_location = math.floor(grid_loc / self.size)
         x_location = grid_loc % self.size
         return (x_location, y_location)
