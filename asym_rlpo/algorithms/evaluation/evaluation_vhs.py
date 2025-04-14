@@ -3,25 +3,25 @@ import torch.nn as nn
 
 from asym_rlpo.data import Episode
 
-from .base import A2C_ABC
+from .base import Evaluation_ABC
 
 
-class AsymA2C(A2C_ABC):
+class Evaluation_HistoryStateCritic(Evaluation_ABC):
     model_keys = {
-        "agent": [
-            "action_model",
-            "observation_model",
-            "interaction_model",
-            "history_model",
-            "policy_model",
+        'agent': [
+            'action_model',
+            'observation_model',
+            'interaction_model',
+            'history_model',
+            'policy_model',
         ],
-        "critic": [
-            "latent_model",
-            "action_model",
-            "observation_model",
-            "interaction_model",
-            "history_model",
-            "vhz_model",
+        'critic': [
+            'latent_model',
+            'action_model',
+            'observation_model',
+            'interaction_model',
+            'history_model',
+            'vhz_model',
         ],
     }
 

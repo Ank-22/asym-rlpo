@@ -5,27 +5,28 @@ export WANDB_CONSOLE=off
 export WANDB_SILENT=true
 
 envs=(
-  # POMDP-heavenhell-episodic-v0
+  POMDP-heavenhell_3-episodic-v0
   # POMDP-shopping_5-episodic-v1
   # PO-pos-CartPole-v1
-  gv-yaml/asym-rlpo/gv_four_rooms.7x7.yaml
-  gv-yaml/asym-rlpo/gv_memory.5x5.yaml
-  gv-yaml/asym-rlpo/gv_memory_four_rooms.7x7.yaml
-  "gv-yaml/asym-rlpo/gv_memory.5x5.yaml --latent-type GV-MEMORY"
-  "gv-yaml/asym-rlpo/gv_memory_four_rooms.7x7.yaml --latent-type GV-MEMORY"
+  # gv-yaml/asym-rlpo/gv_four_rooms.7x7.yaml
+  # gv-yaml/asym-rlpo/gv_memory.5x5.yaml
+  # gv-yaml/asym-rlpo/gv_memory_four_rooms.7x7.yaml
+  # "gv-yaml/asym-rlpo/gv_memory.5x5.yaml --latent-type GV-MEMORY"
+  # "gv-yaml/asym-rlpo/gv_memory_four_rooms.7x7.yaml --latent-type GV-MEMORY"
   # extra-dectiger-v0
   # extra-cleaner-v0
   # extra-car-flag-v0
 )
 
 algos=(
-  a2c
-  asym-a2c
-  # asym-a2c-state
+  # evaluate-vh
+  # evaluate-vhs
+  evaluate-vs
 )
 
 args=(
-  --max-simulation-timesteps 500
+  # --max-simulation-timesteps 500
+  --max-simulation-timesteps 10_000_000
   --max-episode-timesteps 100
   --simulation-num-episodes 2
   # --truncated-histories
@@ -71,7 +72,7 @@ fi
 
 for env in "${envs[@]}"; do
   for algo in "${algos[@]}"; do
-    cmd="python $WARNINGS $DEBUG ./main_a2c.py $env $algo ${args[*]} $*"
+    cmd="python $WARNINGS $DEBUG ./main_evaluation.py $env $algo ${args[*]} $*"
     echo "$cmd"
 
     if $cmd > $CMD_REDIRECT; then

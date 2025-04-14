@@ -13,13 +13,15 @@ import wandb
 import yaml
 from gym_gridverse.rng import reset_gv_rng
 
-from asym_rlpo.algorithms import A2C_ABC, make_a2c_algorithm
+from asym_rlpo.algorithms import Evaluation_ABC, make_evaluation_algorithm
 from asym_rlpo.data_logging.wandb_logger import (
     WandbLogger,
     WandbLoggerSerializer,
 )
 from asym_rlpo.envs import Environment, LatentType, make_env
-from asym_rlpo.evaluation import evaluate, evaluate_returns
+from asym_rlpo.evaluation import evaluate_returns
+from asym_rlpo.policies import Policy
+from asym_rlpo.policies.hardcoded import make_hardcoded_policy
 from asym_rlpo.q_estimators import q_estimator_factory
 from asym_rlpo.sampling import sample_episodes
 from asym_rlpo.utils.aggregate import average
@@ -38,7 +40,6 @@ from asym_rlpo.utils.running_average import (
     RunningAverageSerializer,
     WindowRunningAverage,
 )
-from asym_rlpo.utils.scheduling import make_schedule
 from asym_rlpo.utils.timer import Timer, TimerSerializer
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ def parse_args():
 
     # algorithm and environment
     parser.add_argument("env")
-    parser.add_argument("algo", choices=["a2c", "asym-a2c", "asym-a2c-state"])
+    parser.add_argument("algo", choices=["evaluate-vh", "evaluate-vhs", "evaluate-vs"])
 
     parser.add_argument("--env-label", default=None)
     parser.add_argument("--algo-label", default=None)
@@ -113,8 +114,6 @@ def parse_args():
     parser.add_argument("--negentropy-halflife", type=int, default=500_000)
 
     # optimization
-    parser.add_argument("--optim-lr-actor", type=float, default=1e-4)
-    parser.add_argument("--optim-eps-actor", type=float, default=1e-4)
     parser.add_argument("--optim-lr-critic", type=float, default=1e-4)
     parser.add_argument("--optim-eps-critic", type=float, default=1e-4)
     parser.add_argument("--optim-max-norm", type=float, default=float("inf"))
@@ -212,8 +211,8 @@ class XStatsSerializer(Serializer[XStats]):
 
 class RunState(NamedTuple):
     env: Environment
-    algo: A2C_ABC
-    optimizer_actor: torch.optim.Optimizer
+    policy: Policy
+    algo: Evaluation_ABC
     optimizer_critic: torch.optim.Optimizer
     wandb_logger: WandbLogger
     xstats: XStats
@@ -234,7 +233,6 @@ class RunStateSerializer(Serializer[RunState]):
         return {
             "models": runstate.algo.models.state_dict(),
             "target_models": runstate.algo.target_models.state_dict(),
-            "optimizer_actor": runstate.optimizer_actor.state_dict(),
             "optimizer_critic": runstate.optimizer_critic.state_dict(),
             "wandb_logger": self.wandb_logger_serializer.serialize(
                 runstate.wandb_logger
@@ -254,7 +252,6 @@ class RunStateSerializer(Serializer[RunState]):
     def deserialize(self, runstate: RunState, data: Dict):
         runstate.algo.models.load_state_dict(data["models"])
         runstate.algo.target_models.load_state_dict(data["target_models"])
-        runstate.optimizer_actor.load_state_dict(data["optimizer_actor"])
         runstate.optimizer_critic.load_state_dict(data["optimizer_critic"])
         self.wandb_logger_serializer.deserialize(
             runstate.wandb_logger,
@@ -295,17 +292,14 @@ def setup() -> RunState:
         max_episode_timesteps=config.max_episode_timesteps,
     )
 
-    algo = make_a2c_algorithm(
+    policy = make_hardcoded_policy(config.env, env)
+
+    algo = make_evaluation_algorithm(
         config.algo,
         env,
         truncated_histories_n=config.truncated_histories_n,
     )
 
-    optimizer_actor = torch.optim.Adam(
-        algo.models.parameters(),
-        lr=config.optim_lr_actor,
-        eps=config.optim_eps_actor,
-    )
     optimizer_critic = torch.optim.Adam(
         algo.models.parameters(),
         lr=config.optim_lr_critic,
@@ -318,7 +312,6 @@ def setup() -> RunState:
     timer = Timer()
 
     running_averages = {
-        "avg_target_returns": InfiniteRunningAverage(),
         "avg_behavior_returns": InfiniteRunningAverage(),
         "avg100_behavior_returns": WindowRunningAverage(100),
     }
@@ -331,8 +324,8 @@ def setup() -> RunState:
 
     return RunState(
         env,
+        policy,
         algo,
-        optimizer_actor,
         optimizer_critic,
         wandb_logger,
         xstats,
@@ -371,8 +364,8 @@ def run(runstate: RunState) -> bool:
 
     (
         env,
+        policy,
         algo,
-        optimizer_actor,
         optimizer_critic,
         wandb_logger,
         xstats,
@@ -381,7 +374,6 @@ def run(runstate: RunState) -> bool:
         dispensers,
     ) = runstate
 
-    avg_target_returns = running_averages["avg_target_returns"]
     avg_behavior_returns = running_averages["avg_behavior_returns"]
     avg100_behavior_returns = running_averages["avg100_behavior_returns"]
     target_update_dispenser = dispensers["target_update_dispenser"]
@@ -408,19 +400,6 @@ def run(runstate: RunState) -> bool:
         lambda_=config.q_estimator_lambda,
     )
 
-    behavior_policy = algo.behavior_policy()
-    evaluation_policy = algo.evaluation_policy()
-    evaluation_policy.epsilon = config.evaluation_epsilon
-
-    negentropy_schedule = make_schedule(
-        config.negentropy_schedule,
-        value_from=config.negentropy_value_from,
-        value_to=config.negentropy_value_to,
-        nsteps=config.negentropy_nsteps,
-        halflife=config.negentropy_halflife,
-    )
-    weight_negentropy = negentropy_schedule(xstats.simulation_timesteps)
-
     # setup timeout dispenser
     timeout_dispenser = TimestampDispenser(config.timeout_timestamp)
     timeout = timeout_dispenser.dispense()
@@ -443,35 +422,9 @@ def run(runstate: RunState) -> bool:
         # evaluate policy
         algo.models.eval()
 
-        if config.evaluation and xstats.epoch % config.evaluation_period == 0:
-            with torch.inference_mode():
-                evalstats = evaluate(
-                    env,
-                    evaluation_policy,
-                    discount=config.evaluation_discount,
-                    num_episodes=config.evaluation_num_episodes,
-                )
-
-                avg_target_returns.extend(evalstats.returns.tolist())
-                logger.info(
-                    "EVALUATE epoch %d simulation_timestep %d return % .3f",
-                    xstats.epoch,
-                    xstats.simulation_timesteps,
-                    evalstats.returns.mean(),
-                )
-                wandb_logger.log(
-                    {
-                        **xstats.asdict(),
-                        "hours": timer.hours,
-                        "diagnostics/target_mean_episode_length": evalstats.lengths.mean(),
-                        "performance/target_mean_return": evalstats.returns.mean(),
-                        "performance/avg_target_mean_return": avg_target_returns.value(),
-                    }
-                )
-
         episodes = sample_episodes(
             env,
-            behavior_policy,
+            policy,
             num_episodes=config.simulation_num_episodes,
         )
 
@@ -504,7 +457,6 @@ def run(runstate: RunState) -> bool:
         episodes = [episode.torch().to(device) for episode in episodes]
         xstats.simulation_episodes += len(episodes)
         xstats.simulation_timesteps += sum(len(episode) for episode in episodes)
-        weight_negentropy = negentropy_schedule(xstats.simulation_timesteps)
 
         # target model update
         if target_update_dispenser.dispense(xstats.simulation_timesteps):
@@ -530,45 +482,17 @@ def run(runstate: RunState) -> bool:
         )
         optimizer_critic.step()
 
-        # actor
-        optimizer_actor.zero_grad()
-        losses = [
-            algo.actor_losses(
-                episode,
-                discount=config.training_discount,
-                q_estimator=q_estimator,
-            )
-            for episode in episodes
-        ]
-
-        actor_losses, negentropy_losses = zip(*losses)
-        actor_loss = average(actor_losses)
-        negentropy_loss = average(negentropy_losses)
-
-        loss = actor_loss + weight_negentropy * negentropy_loss
-        loss.backward()
-        actor_gradient_norm = nn.utils.clip_grad.clip_grad_norm_(
-            algo.models.parameters(), max_norm=config.optim_max_norm
-        )
-        optimizer_actor.step()
-
         if wandb_log:
             logger.info(
-                "training log - simulation_step %d losses actor=% .3f critic=% .3f negentropy=% .3f",
+                "training log - simulation_step %d losses critic=% .3f",
                 xstats.simulation_timesteps,
-                actor_loss,
                 critic_loss,
-                negentropy_loss,
             )
             wandb_logger.log(
                 {
                     **xstats.asdict(),
                     "hours": timer.hours,
-                    "training/losses/actor": actor_loss,
                     "training/losses/critic": critic_loss,
-                    "training/losses/negentropy": negentropy_loss,
-                    "training/weights/negentropy": weight_negentropy,
-                    "training/gradient_norms/actor": actor_gradient_norm,
                     "training/gradient_norms/critic": critic_gradient_norm,
                 }
             )
